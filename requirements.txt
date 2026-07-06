@@ -1,0 +1,1 @@
+# No additional dependencies — uses only unicorn-viz core (sdl2, moderngl via VJApi).
