@@ -1,8 +1,9 @@
 """CTA (Call-to-Action) hype overlay controller drop-in.
 
 Owns the message list, cycling/cooldown state, and key dispatch for the
-F9 / F10 / Shift+F10 CTA hotkeys.  Rendering is handled by the core
-CTAOverlay via VJApi.trigger_cta_custom().
+F9 / F10 / Shift+F10 CTA hotkeys.  Alt+F9 opens the live message editor.
+Rendering is handled by the core CTAOverlay via VJApi.trigger_cta_custom().
+The editor overlay is rendered via PIL blit (cta_editor.CTAEditor).
 
 Config section: [cta]
   enabled      = true          # master enable/disable
@@ -23,33 +24,36 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 HELP_ENTRIES = [
-    ('CTA', 'F9', 'CTA hype overlay (cycle messages)'),
-    ('CTA', 'F10', 'CTA: Last song'),
+    ('CTA', 'F9',        'CTA hype overlay (cycle messages)'),
+    ('CTA', 'F10',       'CTA: Last song'),
     ('CTA', 'Shift+F10', 'CTA: One more song'),
+    ('CTA', 'Alt+F9',    'Open CTA message editor'),
 ]
 
 _DEFAULT_MESSAGES: list[tuple[str, str]] = [
     ('Push the buttons!', '\U0001f44d'),
     ('Do the thangs!', '\U0001f514'),
-    ('Share the love!', '❤️ \U0001f4e4'),
+    ('Share the love!', '❤️ \U0001f4e4'),
 ]
 
 
 class CTAController:
-    """Manage CTA message cycling and hotkey dispatch for the CTA overlay.
+    """Manage CTA message cycling, the message editor, and hotkey dispatch.
 
     Instantiated at startup from the [cta] config section.  After construction,
     call set_vj_api() to inject the VJApi reference, then register handle_key()
-    as a VJApi key handler.  The controller is self-contained — no GL resources
-    are allocated here; rendering is delegated to the core CTAOverlay via
-    VJApi.trigger_cta_custom().
+    as a VJApi key handler.  The controller is registered as subsystem 'cta' so
+    its render_overlay() is called every frame, which delegates to the editor
+    when the editor is open.
+
+    Thread safety: all methods called from the main GL thread only.
     """
 
     def __init__(self, cfg: dict) -> None:
-        self._enabled = bool(cfg.get('enabled', True))
+        self._enabled   = bool(cfg.get('enabled', True))
         self._duration_s = max(0.2, float(cfg.get('duration_s', 4.5) or 4.5))
         self._cooldown_s = max(0.0, float(cfg.get('cooldown_s', 0.0) or 0.0))
-        self._mode = str(cfg.get('mode', 'cycle') or 'cycle').strip().lower()
+        self._mode      = str(cfg.get('mode', 'cycle') or 'cycle').strip().lower()
         if self._mode not in {'cycle', 'random'}:
             self._mode = 'cycle'
         self._rng = random.Random(int(cfg.get('seed', 0) or 0))
@@ -57,6 +61,9 @@ class CTAController:
         self._index = -1
         self._last_t = -1e9
         self._vj_api: Any = None
+        self._editor: Any = None   # CTAEditor instance while open
+
+    # ── Setup ──────────────────────────────────────────────────────────────────
 
     def set_vj_api(self, api: Any) -> None:
         """Inject the VJApi instance after construction."""
@@ -80,6 +87,15 @@ class CTAController:
             if text:
                 parsed.append((text, icon))
         return parsed if parsed else list(_DEFAULT_MESSAGES)
+
+    # ── Public state ───────────────────────────────────────────────────────────
+
+    @property
+    def editor_open(self) -> bool:
+        """Return True while the CTA message editor modal is visible."""
+        return self._editor is not None and bool(getattr(self._editor, 'is_open', False))
+
+    # ── CTA triggering ─────────────────────────────────────────────────────────
 
     def trigger_hype(self) -> tuple[str, str, float] | None:
         """Return the next hype CTA payload (text, icon, duration_s), or None if blocked."""
@@ -108,13 +124,52 @@ class CTAController:
         text = 'One more song!' if one_more else 'Last song!'
         return (text, '\U0001f3b5', self._duration_s)
 
-    def handle_key(self, sym: int, mod: int) -> 'str | None | bool':
-        """Handle F9 (hype CTA) and F10 / Shift+F10 (song CTA)."""
-        import sdl2  # noqa: PLC0415
-        ctrl = bool(mod & sdl2.KMOD_CTRL)
-        shift = bool(mod & sdl2.KMOD_SHIFT)
+    # ── Editor lifecycle ───────────────────────────────────────────────────────
 
-        if sym == sdl2.SDLK_F9 and not ctrl:
+    def _open_editor(self) -> None:
+        if self.editor_open:
+            return
+        try:
+            from .cta_editor import CTAEditor  # noqa: PLC0415
+        except Exception as exc:
+            log.warning('CTAEditor unavailable: %s', exc)
+            return
+        self._editor = CTAEditor(self._vj_api, list(self._messages))
+        self._editor.open()
+
+    def _apply_editor_result(self) -> None:
+        if self._editor is None:
+            return
+        result = self._editor.get_result()
+        if result is not None:
+            self._messages = result if result else list(_DEFAULT_MESSAGES)
+            self._index = -1
+            log.info('CTA messages updated (%d entries)', len(self._messages))
+        self._editor = None
+
+    # ── Key handler ────────────────────────────────────────────────────────────
+
+    def handle_key(self, sym: int, mod: int) -> 'str | None | bool':
+        """Dispatch CTA hotkeys.  When editor is open, route all keys to it."""
+        import sdl2  # noqa: PLC0415
+        ctrl  = bool(mod & sdl2.KMOD_CTRL)
+        shift = bool(mod & sdl2.KMOD_SHIFT)
+        alt   = bool(mod & sdl2.KMOD_ALT)
+
+        # ── Editor mode: all keys go to the editor ─────────────────────────
+        if self.editor_open:
+            result = self._editor.handle_key(sym, mod)
+            if not self._editor.is_open:
+                self._apply_editor_result()
+            return result
+
+        # ── Alt+F9: open editor ────────────────────────────────────────────
+        if sym == sdl2.SDLK_F9 and alt and not ctrl:
+            self._open_editor()
+            return None
+
+        # ── F9 (no Ctrl/Alt): hype CTA ────────────────────────────────────
+        if sym == sdl2.SDLK_F9 and not ctrl and not alt:
             payload = self.trigger_hype()
             if payload is None:
                 return 'CTA: cooldown'
@@ -123,6 +178,7 @@ class CTAController:
                 self._vj_api.trigger_cta_custom(text, icon, duration)
             return 'CTA triggered'
 
+        # ── F10 (no Ctrl): song CTA ───────────────────────────────────────
         if sym == sdl2.SDLK_F10 and not ctrl:
             payload = self.trigger_song(one_more=shift)
             if payload is None:
@@ -133,3 +189,10 @@ class CTAController:
             return 'CTA triggered'
 
         return False
+
+    # ── render_overlay: delegate to editor when open ───────────────────────────
+
+    def render_overlay(self, width: int, height: int, dt: float, *args: Any) -> None:
+        """Render editor overlay; no-op when editor is closed."""
+        if self._editor is not None:
+            self._editor.render_overlay(width, height, dt, *args)
