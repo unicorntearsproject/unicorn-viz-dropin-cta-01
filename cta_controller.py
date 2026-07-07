@@ -68,6 +68,36 @@ class CTAController:
     def set_vj_api(self, api: Any) -> None:
         """Inject the VJApi instance after construction."""
         self._vj_api = api
+        try:
+            api.register_midi_actions('CTA', [
+                ('cta_hype',      'Trigger hype CTA'),
+                ('cta_last_song', 'Trigger last-song CTA'),
+                ('cta_one_more',  'Trigger one-more CTA'),
+            ])
+            api.register_midi_action_handler('cta_hype',      self._midi_cta_hype)
+            api.register_midi_action_handler('cta_last_song', self._midi_cta_last_song)
+            api.register_midi_action_handler('cta_one_more',  self._midi_cta_one_more)
+        except Exception as exc:
+            import logging  # noqa: PLC0415
+            logging.getLogger(__name__).debug('cta-01: MIDI registration failed: %s', exc)
+
+    def _midi_cta_hype(self) -> None:
+        """MIDI handler: fire the next hype CTA via vj_api."""
+        payload = self.trigger_hype()
+        if payload and self._vj_api is not None:
+            self._vj_api.trigger_cta_custom(*payload)
+
+    def _midi_cta_last_song(self) -> None:
+        """MIDI handler: fire last-song CTA via vj_api."""
+        payload = self.trigger_song(one_more=False)
+        if payload and self._vj_api is not None:
+            self._vj_api.trigger_cta_custom(*payload)
+
+    def _midi_cta_one_more(self) -> None:
+        """MIDI handler: fire one-more-song CTA via vj_api."""
+        payload = self.trigger_song(one_more=True)
+        if payload and self._vj_api is not None:
+            self._vj_api.trigger_cta_custom(*payload)
 
     def _parse_messages(self, raw: object) -> list[tuple[str, str]]:
         """Parse message list from config, falling back to built-in defaults."""
