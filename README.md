@@ -1,6 +1,7 @@
 # cta-01 — CTA Hype Overlay
 
 Owner: Drop-in Maintainers
+Version: 0.7.0
 Status: active
 Last updated: 2026-07-06
 
@@ -39,3 +40,7 @@ seed        = 0         # RNG seed for random mode
 ## Source
 
 Private repository: `https://github.com/iDoMeteor/unicorn-viz-dropin-cta-01`
+
+## Changelog
+
+- **0.7.0** — initial versioned release.
