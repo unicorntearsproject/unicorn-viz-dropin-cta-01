@@ -5,6 +5,18 @@ field and an icon/emoji field with full web-textarea keyboard semantics
 (arrow keys, Home/End, Ctrl+Arrow word-jump, Shift selection, Backspace/
 Delete, Ctrl+Backspace, Ctrl+A, Tab/Shift-Tab focus).
 
+Panel, field, row and button backgrounds are gradient rounded rectangles
+(``_grad_rounded_rect`` / ``_fill_box``) rather than flat single-colour
+fills, with an organic "drip" edge sag driven by bass/beat
+(``_draw_drip_edge`` -- the same wave-plus-sag shape as banner-01's
+``_draw_drippy_text``, applied to box geometry instead of glyphs) and
+treble/beat-reactive "sparkle" glint accents along the panel border
+(``_draw_sparkles``). All three are gated by the ``fx_enabled`` /
+``drip_enabled`` / ``sparkle_enabled`` constructor flags -- sourced from the
+``[cta]`` config's ``editor_fx`` / ``editor_drip`` / ``editor_sparkle`` /
+``editor_sparkle_density`` keys via ``CTAController`` -- so disabling
+``editor_fx`` falls back to the original flat-rectangle rendering.
+
 Lifecycle:
     editor = CTAEditor(vj_api, messages)
     editor.open()
@@ -15,6 +27,8 @@ Lifecycle:
 from __future__ import annotations
 
 import logging
+import math
+import random
 from pathlib import Path
 from typing import Any
 
@@ -50,8 +64,14 @@ _SUBTITLE     = (95,  75, 150)          # dim purple sub-line
 _LABEL        = (155, 75, 255)          # column header purple
 _TEXT         = (225, 215, 255)         # near-white body text
 _DIM          = (100,  90, 135)         # inactive / dim
-_ROW_SEL      = (40,   0,  85)          # selected-row background
-_FIELD_BG     = (8,    0,  20)          # input field background
+_ROW_SEL      = (40,   0,  85)          # selected-row background (flat fallback)
+_ROW_SEL_TOP  = (58,   4, 118)          # selected-row gradient top
+_ROW_SEL_BOT  = (20,   0,  46)          # selected-row gradient bottom
+_FIELD_BG     = (8,    0,  20)          # input field background (flat fallback)
+_FIELD_GRAD_TOP     = (22,   6,  42)    # idle field gradient top
+_FIELD_GRAD_BOT     = (5,    0,  14)    # idle field gradient bottom
+_FIELD_GRAD_TOP_ACT = (6,   30,  36)    # active field gradient top (cyan tint)
+_FIELD_GRAD_BOT_ACT = (2,   10,  14)    # active field gradient bottom
 _FIELD_ACTIVE = (0,  235, 255)          # active field border (cyan)
 _FIELD_IDLE   = (75,   0, 150)          # idle field border (dark purple)
 _CURSOR       = (0,  255, 255)          # insertion cursor (cyan)
@@ -62,6 +82,8 @@ _BTN_ADD      = (0,  135,  55)          # add button accent
 _BTN_DEL      = (135,  0,  40)          # delete button accent
 _BTN_SAVE     = (0,  165,  75)          # save button accent
 _BTN_CANCEL   = (155,  25,  0)          # cancel button accent
+_SPARKLE_A    = (255, 140, 235)         # pink glint accent
+_SPARKLE_B    = (150, 245, 255)         # cyan glint accent
 
 _BLINK_S   = 0.50   # cursor blink half-period
 _MAX_ROWS  = 20
@@ -72,6 +94,15 @@ _ICON_W    = 96
 _NUM_W     = 36
 _FONT_SZ   = 21
 _TITLE_SZ  = 28
+
+# Corner radii for the "not just flat rectangles" panel/box redesign.
+_RADIUS_PANEL = 18
+_RADIUS_ROW   = 8
+_RADIUS_FIELD = 8
+_RADIUS_BTN   = 10
+
+# Sparkle anchor count at density == 1.0.
+_SPARKLE_BASE_COUNT = 18
 
 # ── GLSL pass-through (blit PIL texture to screen) ───────────────────────────
 _VERT = """
@@ -113,7 +144,16 @@ class CTAEditor:
     automatically on close.
     """
 
-    def __init__(self, vj_api: Any, messages: list[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        vj_api: Any,
+        messages: list[tuple[str, str]],
+        *,
+        fx_enabled: bool = True,
+        drip_enabled: bool = True,
+        sparkle_enabled: bool = True,
+        sparkle_density: float = 1.0,
+    ) -> None:
         self._api = vj_api
 
         # Editable rows: (text_field, icon_field)
@@ -149,6 +189,30 @@ class CTAEditor:
         self._font:  Any = None
         self._bfont: Any = None   # bold / title font
 
+        # ── Visual FX (drip / sparkle / gradient panels) ────────────────────
+        # ``fx_enabled`` is the master switch; drip/sparkle are only ever on
+        # when it is. Sourced from [cta] config via CTAController -- see
+        # that module's docstring for the editor_fx / editor_drip /
+        # editor_sparkle / editor_sparkle_density keys.
+        self._fx_enabled     = bool(fx_enabled)
+        self._drip_enabled   = self._fx_enabled and bool(drip_enabled)
+        self._sparkle_enabled = self._fx_enabled and bool(sparkle_enabled)
+        self._sparkle_density = max(0.0, float(sparkle_density))
+
+        # Audio-reactive state, refreshed each frame from the AudioData
+        # passed into render_overlay() (mirrors banner-01's _draw_drippy_text
+        # bass/beat pattern: bass widens the wave, beat adds an extra sag).
+        self._bass   = 0.0
+        self._treble = 0.0
+        self._beat   = 0.0
+        self._fx_time    = 0.0
+        self._drip_phase = 0.0
+
+        # Sparkle anchors: generated lazily (once per open()) along the
+        # panel border in panel-local fractional coordinates so they track
+        # panel geometry without needing to be recomputed on resize.
+        self._sparkle_anchors: list[dict] | None = None
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     @property
@@ -164,6 +228,11 @@ class CTAEditor:
         self._dirty     = True
         self._blink_acc = 0.0
         self._cursor_vis = True
+        # Fresh sparkle placement + FX clock each time the editor opens, so
+        # the panel doesn't look identical session to session.
+        self._sparkle_anchors = None
+        self._fx_time    = 0.0
+        self._drip_phase = 0.0
         self._api.register_text_input_handler('cta_editor', self._on_text_input)
         self._api.start_text_input()
         self._api.register_subsystem('cta_editor', self)
@@ -321,9 +390,11 @@ class CTAEditor:
 
     # ── render_overlay (called each frame as registered subsystem) ─────────────
 
-    def render_overlay(self, width: int, height: int, dt: float, *_: Any) -> None:
+    def render_overlay(self, width: int, height: int, dt: float, audio: Any = None, *_: Any) -> None:
         if not self._is_open or not _PIL_OK or not _MGL_OK or not _NP_OK:
             return
+
+        self._update_fx(dt, audio)
 
         self._blink_acc += dt
         if self._blink_acc >= _BLINK_S:
@@ -355,6 +426,169 @@ class CTAEditor:
 
         self._ensure_gl(ctx)
         self._blit()
+
+    # ── Visual FX state ──────────────────────────────────────────────────────
+
+    def _update_fx(self, dt: float, audio: Any) -> None:
+        """Refresh audio-reactive drip/sparkle state from the current frame's
+        AudioData (bass_n/treble_n/beat, same normalised signals banner-01's
+        drip pattern uses). Marks the frame dirty so the animation actually
+        advances every frame instead of only redrawing on interaction."""
+        if audio is not None:
+            self._bass   = float(getattr(audio, 'bass_n', 0.0) or 0.0)
+            self._treble = float(getattr(audio, 'treble_n', 0.0) or 0.0)
+            self._beat   = float(getattr(audio, 'beat', 0.0) or 0.0)
+
+        dt = max(0.0, float(dt))
+        self._fx_time += dt
+        # Bass widens the drip wave, beat adds an extra sag pulse -- mirrors
+        # banner-01's _draw_drippy_text drip_phase advance.
+        self._drip_phase += dt * (1.15 + self._bass * 2.4 + self._beat * 1.6)
+
+        if self._drip_enabled or self._sparkle_enabled:
+            self._dirty = True
+
+    def _init_sparkles(self) -> None:
+        """Lazily scatter sparkle anchors along the panel border in
+        panel-local fractional (u, v) coordinates, so they track panel
+        geometry without needing to be regenerated on resize."""
+        self._sparkle_anchors = []
+        if not self._sparkle_enabled:
+            return
+        count = max(0, int(round(_SPARKLE_BASE_COUNT * self._sparkle_density)))
+        rng = random.Random()
+        anchors: list[dict] = []
+        for _ in range(count):
+            edge = rng.randrange(4)
+            jitter = rng.uniform(-0.015, 0.015)
+            if edge == 0:      # top edge
+                u, v = rng.uniform(0.03, 0.97), 0.0 + jitter
+            elif edge == 1:    # bottom edge
+                u, v = rng.uniform(0.03, 0.97), 1.0 + jitter
+            elif edge == 2:    # left edge
+                u, v = 0.0 + jitter, rng.uniform(0.05, 0.95)
+            else:              # right edge
+                u, v = 1.0 + jitter, rng.uniform(0.05, 0.95)
+            anchors.append({
+                'u': u, 'v': v,
+                'phase': rng.uniform(0.0, math.tau),
+                'speed': rng.uniform(0.6, 1.6),
+                'size': rng.uniform(0.7, 1.3),
+                'color': _SPARKLE_A if rng.random() < 0.5 else _SPARKLE_B,
+            })
+        self._sparkle_anchors = anchors
+
+    def _draw_sparkles(
+        self, draw: 'ImageDraw.ImageDraw', px: int, py: int, pw: int, ph: int,
+    ) -> None:
+        """Draw glinting accent particles along the panel border, brightness
+        driven by treble (steady twinkle) and beat (a flash on every hit)."""
+        if not self._sparkle_enabled:
+            return
+        if self._sparkle_anchors is None:
+            self._init_sparkles()
+        if not self._sparkle_anchors:
+            return
+
+        treble_boost = 0.35 + 0.65 * self._treble
+        beat_boost = self._beat
+        for a in self._sparkle_anchors:
+            twinkle = 0.5 + 0.5 * math.sin(self._fx_time * a['speed'] * 3.0 + a['phase'])
+            bright = twinkle * treble_boost + beat_boost * 0.6
+            if bright < 0.18:
+                continue
+            bright = min(1.0, bright)
+            x = px + a['u'] * pw
+            y = py + a['v'] * ph
+            size = (2.0 + 3.5 * bright) * a['size']
+            alpha = int(60 + 195 * bright)
+            col = (*a['color'], alpha)
+            draw.line([(x - size, y), (x + size, y)], fill=col, width=1)
+            draw.line([(x, y - size), (x, y + size)], fill=col, width=1)
+            if bright > 0.55:
+                d = size * 0.55
+                draw.line([(x - d, y - d), (x + d, y + d)], fill=col, width=1)
+                draw.line([(x - d, y + d), (x + d, y - d)], fill=col, width=1)
+
+    def _draw_drip_edge(
+        self,
+        draw: 'ImageDraw.ImageDraw',
+        x0: float, x1: float, y: float,
+        color: tuple,
+        width: int = 1,
+        amp: float = 1.0,
+        segments: int = 12,
+    ) -> None:
+        """Draw a horizontal edge with an organic bass/beat-driven sag -- the
+        "drip". Same wave-plus-sag shape as banner-01's _draw_drippy_text,
+        applied to box-edge geometry instead of glyph baselines so the box
+        itself looks like it's gently oozing rather than a static rectangle."""
+        if not self._drip_enabled or x1 <= x0:
+            return
+        wave_amp = (1.1 + self._bass * 3.2) * amp
+        sag_amp = (self._beat * 4.5) * amp
+        pts = []
+        for i in range(segments + 1):
+            t = i / segments
+            x = x0 + (x1 - x0) * t
+            wave = math.sin(self._drip_phase + t * 5.4) * wave_amp
+            sag = sag_amp * (0.5 + 0.5 * math.sin(self._drip_phase * 0.33 + t * 4.1))
+            pts.append((x, y + wave + sag))
+        a = color[3] if len(color) == 4 else 255
+        col = (color[0], color[1], color[2], a)
+        draw.line(pts, fill=col, width=width, joint='curve')
+
+    def _grad_rounded_rect(
+        self, w: int, h: int, top_rgb: tuple, bot_rgb: tuple, alpha: int, radius: int,
+    ) -> 'Image.Image':
+        """Return an RGBA image: a vertical-gradient fill clipped to a
+        rounded rectangle. Used for panel/field/row/button backgrounds --
+        the "more sophistication" upgrade over a single flat fill colour."""
+        w = max(1, int(w))
+        h = max(1, int(h))
+        radius = max(0, min(int(radius), w // 2, h // 2))
+        t = np.linspace(0.0, 1.0, h, dtype=np.float32).reshape(h, 1, 1)
+        top = np.array(top_rgb[:3], dtype=np.float32).reshape(1, 1, 3)
+        bot = np.array(bot_rgb[:3], dtype=np.float32).reshape(1, 1, 3)
+        grad = top * (1.0 - t) + bot * t
+        grad = np.broadcast_to(grad, (h, w, 3)).astype(np.uint8)
+        img = Image.fromarray(grad, 'RGB').convert('RGBA')
+        mask = Image.new('L', (w, h), 0)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            [(0, 0), (w - 1, h - 1)], radius=radius, fill=int(max(0, min(255, alpha))),
+        )
+        img.putalpha(mask)
+        return img
+
+    def _fill_box(
+        self,
+        img: 'Image.Image', draw: 'ImageDraw.ImageDraw',
+        x: float, y: float, w: float, h: float,
+        flat_color: tuple, top_rgb: tuple, bot_rgb: tuple, alpha: int, radius: int,
+    ) -> None:
+        """Fill a box background: a flat rectangle when FX are disabled
+        (the original 1980s-boxy look, kept as a working fallback), or a
+        gradient rounded rect when enabled."""
+        if self._fx_enabled:
+            grad = self._grad_rounded_rect(w, h, top_rgb, bot_rgb, alpha, radius)
+            img.alpha_composite(grad, (int(x), int(y)))
+        else:
+            draw.rectangle([(x, y), (x + w, y + h)], fill=flat_color)
+
+    def _stroke_box(
+        self,
+        draw: 'ImageDraw.ImageDraw',
+        x: float, y: float, w: float, h: float,
+        color: tuple, width: int, radius: int,
+    ) -> None:
+        """Outline a box: sharp rectangle when FX are disabled, rounded
+        rectangle when enabled."""
+        if self._fx_enabled:
+            draw.rounded_rectangle(
+                [(x, y), (x + w, y + h)], outline=color, width=width, radius=max(0, radius),
+            )
+        else:
+            draw.rectangle([(x, y), (x + w, y + h)], outline=color, width=width)
 
     # ── GL helpers ─────────────────────────────────────────────────────────────
 
@@ -430,20 +664,26 @@ class CTAEditor:
         footer_h = _FONT_SZ + _PAD * 4                     # buttons + help bar
         self._vis = max(3, (ph - header_h - footer_h) // _ROW_H)
 
-        # Panel gradient fill
-        for y in range(ph):
-            t = y / max(1, ph - 1)
-            r = int(_PANEL_TOP[0] * (1 - t) + _PANEL_BOT[0] * t)
-            g = int(_PANEL_TOP[1] * (1 - t) + _PANEL_BOT[1] * t)
-            b = int(_PANEL_TOP[2] * (1 - t) + _PANEL_BOT[2] * t)
-            draw.line([(px, py + y), (px + pw - 1, py + y)], fill=(r, g, b, 255))
+        # Panel gradient fill, clipped to rounded corners when FX are on --
+        # replaces the old flat-topped rectangle with a softer silhouette.
+        self._fill_box(
+            img, draw, px, py, pw, ph,
+            _PANEL_TOP, _PANEL_TOP, _PANEL_BOT, 255, _RADIUS_PANEL,
+        )
 
         # Glow outline (3 passes from diffuse to crisp)
         for ofs, a in ((6, 35), (3, 80), (1, 200)):
-            draw.rectangle(
-                [(px - ofs, py - ofs), (px + pw + ofs - 1, py + ph + ofs - 1)],
-                outline=(*_BORDER, a), width=1,
+            self._stroke_box(
+                draw, px - ofs, py - ofs, pw + ofs * 2 - 1, ph + ofs * 2 - 1,
+                (*_BORDER, a), 1, _RADIUS_PANEL + ofs,
             )
+
+        # Drip accent beneath the panel's bottom edge -- the box looks like
+        # it's gently oozing rather than a static rectangle.
+        self._draw_drip_edge(
+            draw, px + _RADIUS_PANEL, px + pw - _RADIUS_PANEL, py + ph,
+            _BORDER, width=2, amp=1.1,
+        )
 
         # ── Header ───────────────────────────────────────────────────────────
         title = '✦  CTA Messages Editor  ✦'
@@ -486,16 +726,18 @@ class CTAEditor:
             sel = (i == self._sel_row)
 
             if sel:
+                row_x, row_y = px + 3, ry - 3
+                row_w, row_h = pw - 6, _FIELD_H + 6
+                self._fill_box(
+                    img, draw, row_x, row_y, row_w, row_h,
+                    _ROW_SEL, _ROW_SEL_TOP, _ROW_SEL_BOT, 235, _RADIUS_ROW,
+                )
                 # Selected row glow
                 for ofs, a in ((3, 25), (1, 100)):
-                    draw.rectangle(
-                        [(px + 3 - ofs, ry - 3 - ofs), (px + pw - 3 + ofs, ry + _FIELD_H + 3 + ofs)],
-                        outline=(*_BORDER, a), width=1,
+                    self._stroke_box(
+                        draw, row_x - ofs, row_y - ofs, row_w + ofs * 2, row_h + ofs * 2,
+                        (*_BORDER, a), 1, _RADIUS_ROW + ofs,
                     )
-                draw.rectangle(
-                    [(px + 3, ry - 3), (px + pw - 3, ry + _FIELD_H + 3)],
-                    fill=_ROW_SEL,
-                )
 
             # Row number
             num_col = _LABEL if sel else _DIM
@@ -504,12 +746,12 @@ class CTAEditor:
 
             # Text field
             tf_active = sel and self._sel_col == 0
-            self._draw_field(draw, tf, txt_x,  ry, txt_w,  _FIELD_H, active=tf_active,
+            self._draw_field(img, draw, tf, txt_x,  ry, txt_w,  _FIELD_H, active=tf_active,
                              show_cursor=tf_active and self._cursor_vis)
 
             # Icon field
             if_active = sel and self._sel_col == 1
-            self._draw_field(draw, if_, icon_x, ry, _ICON_W, _FIELD_H, active=if_active,
+            self._draw_field(img, draw, if_, icon_x, ry, _ICON_W, _FIELD_H, active=if_active,
                              show_cursor=if_active and self._cursor_vis)
 
         # Scroll indicator
@@ -541,11 +783,25 @@ class CTAEditor:
         bx = px + (pw - total_btn_w) // 2
 
         for label, color, shortcut in btns:
-            # Button background + border
-            draw.rectangle([(bx, btn_y), (bx + btn_w, btn_y + 34)],
-                           fill=(color[0] // 5, color[1] // 5, color[2] // 5, 220))
-            draw.rectangle([(bx, btn_y), (bx + btn_w, btn_y + 34)],
-                           outline=(*color, 200), width=1)
+            btn_h = 34
+            flat_fill = (color[0] // 5, color[1] // 5, color[2] // 5, 220)
+            top_c = (min(255, color[0] // 2 + 45), min(255, color[1] // 2 + 45), min(255, color[2] // 2 + 45))
+            bot_c = (color[0] // 7, color[1] // 7, color[2] // 7)
+            # Button glow halo, then gradient fill, then crisp border.
+            for ofs, a in ((5, 18), (3, 35), (1, 70)):
+                self._stroke_box(
+                    draw, bx - ofs, btn_y - ofs, btn_w + ofs * 2, btn_h + ofs * 2,
+                    (*color, a), 1, _RADIUS_BTN + ofs,
+                )
+            self._fill_box(
+                img, draw, bx, btn_y, btn_w, btn_h,
+                flat_fill, top_c, bot_c, 225, _RADIUS_BTN,
+            )
+            self._stroke_box(draw, bx, btn_y, btn_w, btn_h, (*color, 200), 1, _RADIUS_BTN)
+            self._draw_drip_edge(
+                draw, bx + _RADIUS_BTN, bx + btn_w - _RADIUS_BTN, btn_y + btn_h,
+                color, width=1, amp=0.65,
+            )
             # Label
             try:
                 lb = draw.textbbox((0, 0), label, font=self._font)
@@ -573,12 +829,16 @@ class CTAEditor:
             hx = px + _PAD
         draw.text((hx, help_y), help_text, font=self._font, fill=_HELP_TEXT)
 
+        # Sparkle accents drawn last so glints sit on top of the whole panel.
+        self._draw_sparkles(draw, px, py, pw, ph)
+
         return img
 
     # ── Field renderer ──────────────────────────────────────────────────────────
 
     def _draw_field(
         self,
+        img: 'Image.Image',
         draw: 'ImageDraw.ImageDraw',
         field: TextField,
         fx: int, fy: int, fw: int, fh: int,
@@ -591,12 +851,24 @@ class CTAEditor:
 
         # Background + border
         border_c = _FIELD_ACTIVE if active else _FIELD_IDLE
-        draw.rectangle([(fx, fy), (fx + fw, fy + fh)], fill=_FIELD_BG)
-        draw.rectangle([(fx, fy), (fx + fw, fy + fh)], outline=(*border_c, 220), width=1)
+        top_c, bot_c = (
+            (_FIELD_GRAD_TOP_ACT, _FIELD_GRAD_BOT_ACT) if active
+            else (_FIELD_GRAD_TOP, _FIELD_GRAD_BOT)
+        )
+        self._fill_box(img, draw, fx, fy, fw, fh, _FIELD_BG, top_c, bot_c, 235, _RADIUS_FIELD)
+        self._stroke_box(draw, fx, fy, fw, fh, (*border_c, 220), 1, _RADIUS_FIELD)
         if active:
             # Subtle inner glow
-            draw.rectangle([(fx + 1, fy + 1), (fx + fw - 1, fy + fh - 1)],
-                           outline=(*_FIELD_ACTIVE, 50), width=1)
+            self._stroke_box(
+                draw, fx + 1, fy + 1, fw - 2, fh - 2,
+                (*_FIELD_ACTIVE, 50), 1, max(0, _RADIUS_FIELD - 1),
+            )
+            # Focused field drips a little more visibly than idle ones --
+            # the box you're editing is the one that visibly "oozes".
+            self._draw_drip_edge(
+                draw, fx + _RADIUS_FIELD, fx + fw - _RADIUS_FIELD, fy + fh,
+                border_c, width=1, amp=0.8,
+            )
 
         # Compute view_start so cursor stays visible
         vs = getattr(field, 'view_start', 0)

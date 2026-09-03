@@ -1,9 +1,9 @@
 # cta-01 — CTA Hype Overlay
 
 Owner: Drop-in Maintainers
-Version: 0.7.0
+Version: 0.8.0
 Status: active
-Last updated: 2026-07-06
+Last updated: 2026-09-03
 
 `cta-01` manages call-to-action (CTA) message cycling for the unicorn-viz
 hype overlay.  It owns the message list, cooldown/cycle logic, and F9/F10
@@ -35,6 +35,16 @@ seed        = 0         # RNG seed for random mode
 #   "Follow for more!|🔔",
 #   { text = "Share the love!", icon = "❤️" },
 # ]
+
+# Message editor (Alt+F9) visuals: gradient/rounded-corner panels, drip
+# (bass/beat-driven organic edge sag on box borders) and sparkle
+# (treble/beat-driven glinting accents along the panel border) instead of
+# flat single-colour rectangles. editor_fx is the master switch — turning
+# it off falls back to the original flat-rectangle look.
+editor_fx              = true   # master enable for the editor's visual FX
+editor_drip            = true   # animated organic edge sag on box borders
+editor_sparkle         = true   # glinting accents along the panel border
+editor_sparkle_density = 1.0    # multiplier on sparkle particle count
 ```
 
 ## Source
@@ -43,4 +53,12 @@ Private repository: `https://github.com/iDoMeteor/unicorn-viz-dropin-cta-01`
 
 ## Changelog
 
+- **0.8.0** — message editor panel/box redesign: gradient rounded-rect
+  backgrounds (panel, fields, selected row, buttons) replace the old flat
+  single-colour rectangles; drip (bass/beat-driven organic edge sag,
+  mirroring banner-01's drippy-text pattern) and sparkle (treble/beat-driven
+  glint accents along the panel border) added, both audio-reactive.
+  Configurable via new `editor_fx` / `editor_drip` / `editor_sparkle` /
+  `editor_sparkle_density` keys in `[cta]` (all default on; `editor_fx`
+  falls back to the original flat look when disabled).
 - **0.7.0** — initial versioned release.

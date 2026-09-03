@@ -13,10 +13,19 @@ Config section: [cta]
   seed         = 0             # RNG seed for random mode
   messages     = []            # list of {text, icon} dicts or "text|icon" strings;
                                # omit to use the built-in defaults
+
+  # Message editor (Alt+F9) visuals -- gradient/rounded panels, drip
+  # (bass/beat-driven edge sag) and sparkle (treble/beat-driven glint
+  # accents) instead of flat single-colour rectangles. editor_fx is the
+  # master switch; drip/sparkle only ever run when it's also true.
+  editor_fx              = true   # master enable for the editor's visual FX
+  editor_drip            = true   # animated organic edge sag on box borders
+  editor_sparkle         = true   # glinting accents along the panel border
+  editor_sparkle_density = 1.0    # multiplier on sparkle particle count
 """
 from __future__ import annotations
 
-__version__ = '0.7.0'
+__version__ = '0.8.0'
 
 import logging
 import random
@@ -64,6 +73,14 @@ class CTAController:
         self._last_t = -1e9
         self._vj_api: Any = None
         self._editor: Any = None   # CTAEditor instance while open
+
+        # Message editor visual FX -- see the [cta] config docstring above.
+        self._editor_fx = bool(cfg.get('editor_fx', True))
+        self._editor_drip = bool(cfg.get('editor_drip', True))
+        self._editor_sparkle = bool(cfg.get('editor_sparkle', True))
+        self._editor_sparkle_density = max(
+            0.0, float(cfg.get('editor_sparkle_density', 1.0) or 1.0)
+        )
 
     # ── Setup ──────────────────────────────────────────────────────────────────
 
@@ -166,7 +183,14 @@ class CTAController:
         except Exception as exc:
             log.warning('CTAEditor unavailable: %s', exc)
             return
-        self._editor = CTAEditor(self._vj_api, list(self._messages))
+        self._editor = CTAEditor(
+            self._vj_api,
+            list(self._messages),
+            fx_enabled=self._editor_fx,
+            drip_enabled=self._editor_drip,
+            sparkle_enabled=self._editor_sparkle,
+            sparkle_density=self._editor_sparkle_density,
+        )
         self._editor.open()
 
     def _apply_editor_result(self) -> None:
