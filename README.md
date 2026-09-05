@@ -1,7 +1,7 @@
 # cta-01 — CTA Hype Overlay
 
 Owner: Drop-in Maintainers
-Version: 0.8.0
+Version: 0.9.0
 Status: active
 Last updated: 2026-09-03
 
@@ -53,6 +53,19 @@ Private repository: `https://github.com/iDoMeteor/unicorn-viz-dropin-cta-01`
 
 ## Changelog
 
+- **0.9.0** — **Control Room panel, P2 of
+  `docs/planning/control-room-panel-registry-plan-2026-09-04.md`, and a real
+  bug fix.** Registers a declarative `CTA` panel via
+  `vj_api.register_operator_panel()` (guarded, degrades to no panel on an
+  older core) with HYPE/LAST SONG/ONE MORE buttons wired to
+  `trigger_hype()`/`trigger_song()` + `vj_api.trigger_cta_custom()` --
+  the same real path the existing MIDI handlers already use. Replaces
+  Control Room's hardcoded "DROP-INS" panel CTA/LAST SONG buttons, which
+  called `vj_api.trigger_streaming_cta()`/`trigger_streaming_song_cta()` --
+  **methods that never existed anywhere in the codebase**, so every press
+  silently failed (caught by Control Room's own exception handler). The
+  stateful "press again for one more" toggle Control Room kept on its own
+  side is replaced by two independent buttons. 7 new tests.
 - **0.8.0** — message editor panel/box redesign: gradient rounded-rect
   backgrounds (panel, fields, selected row, buttons) replace the old flat
   single-colour rectangles; drip (bass/beat-driven organic edge sag,

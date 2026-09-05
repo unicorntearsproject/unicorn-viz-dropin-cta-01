@@ -25,7 +25,7 @@ Config section: [cta]
 """
 from __future__ import annotations
 
-__version__ = '0.8.0'
+__version__ = '0.9.0'
 
 import logging
 import random
@@ -99,6 +99,68 @@ class CTAController:
         except Exception as exc:
             import logging  # noqa: PLC0415
             logging.getLogger(__name__).debug('cta-01: MIDI registration failed: %s', exc)
+
+        # Control Room panel (docs/planning/control-room-panel-registry-plan-
+        # 2026-09-04.md, P2): registers real, working actions instead of the
+        # old hardcoded CR "DROP-INS" panel buttons, which called
+        # vj_api.trigger_streaming_cta()/trigger_streaming_song_cta() --
+        # methods that never existed anywhere in the codebase, so every
+        # press of CTA/LAST SONG silently failed (caught by Control Room's
+        # own outer exception handler). The stateful "press again for one
+        # more" toggle Control Room kept on its own side is dropped in
+        # favor of two independent buttons -- trigger_song() takes
+        # one_more explicitly either way, and a fixed button removes the
+        # chance of firing the wrong one by forgetting which state it was in.
+        try:
+            from unicornviz.operator_panels import (  # noqa: PLC0415
+                OperatorPanel,
+            )
+            api.register_operator_panel(OperatorPanel(
+                name='cta',
+                title='CTA',
+                priority=70,
+                size='small',
+                content=self._operator_panel_content,
+                on_action=self._operator_panel_action,
+                tooltips={
+                    'hype': 'Show the streaming call-to-action overlay',
+                    'last_song': 'Announce the last song',
+                    'one_more': 'Announce one more song',
+                },
+            ))
+        except Exception as exc:
+            import logging  # noqa: PLC0415
+            logging.getLogger(__name__).debug('cta-01: operator panel registration failed: %s', exc)
+
+    def _operator_panel_content(self) -> Any:
+        """Build the Control Room panel's live state (see registration above)."""
+        from unicornviz.operator_panels import (  # noqa: PLC0415
+            PanelButton, PanelContent,
+        )
+        return PanelContent(
+            status='ON' if self._enabled else 'OFF',
+            buttons=(
+                PanelButton('hype', 'HYPE'),
+                PanelButton('last_song', 'LAST SONG'),
+                PanelButton('one_more', 'ONE MORE'),
+            ),
+        )
+
+    def _operator_panel_action(self, action: str, _payload: Any) -> str | None:
+        """Handle a Control Room panel button; see registration above."""
+        if action == 'hype':
+            payload = self.trigger_hype()
+        elif action == 'last_song':
+            payload = self.trigger_song(one_more=False)
+        elif action == 'one_more':
+            payload = self.trigger_song(one_more=True)
+        else:
+            return None
+        if payload is None:
+            return 'CTA: on cooldown or disabled'
+        if self._vj_api is not None:
+            self._vj_api.trigger_cta_custom(*payload)
+        return f'CTA: {payload[0]}'
 
     def _midi_cta_hype(self) -> None:
         """MIDI handler: fire the next hype CTA via vj_api."""
