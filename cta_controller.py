@@ -25,7 +25,7 @@ Config section: [cta]
 """
 from __future__ import annotations
 
-__version__ = '0.9.0'
+__version__ = '0.10.0'
 
 import logging
 import random
@@ -59,6 +59,53 @@ class CTAController:
 
     Thread safety: all methods called from the main GL thread only.
     """
+
+
+    # -- Config editor (core `c`, Performance tab) ---------------------------
+    # The editor overlay's PIL raster runs every frame while drip or
+    # sparkles animate; these rows are the cost switches.  Applied to the
+    # open editor at once and to every later one; core remembers them.
+    CONFIG_EDITOR_CATEGORY = 'Performance'
+    CONFIG_EDITOR_KEY = 'cta'
+    CONFIG_EDITOR_TITLE = 'CTA editor'
+
+    def config_editor_settings(self) -> list[dict[str, object]]:
+        """Editor FX master, drip, sparkles and sparkle density."""
+        return [
+            {'name': 'editor_fx', 'label': 'Editor FX', 'kind': 'toggle',
+             'value': 1.0 if self._editor_fx else 0.0,
+             'hint': 'Master switch: off draws flat panels, no per-frame raster'},
+            {'name': 'editor_drip', 'label': 'Editor drip', 'kind': 'toggle',
+             'value': 1.0 if self._editor_drip else 0.0,
+             'hint': 'Bass-driven edge sag; re-rasters the editor every frame'},
+            {'name': 'editor_sparkle', 'label': 'Editor sparkles', 'kind': 'toggle',
+             'value': 1.0 if self._editor_sparkle else 0.0,
+             'hint': 'Glinting border accents; re-rasters the editor every frame'},
+            {'name': 'editor_sparkle_density', 'label': 'Sparkle density',
+             'value': float(self._editor_sparkle_density), 'min': 0.0, 'max': 2.0,
+             'display': f'{self._editor_sparkle_density:.2f}x',
+             'hint': 'Multiplier on the sparkle particle count'},
+        ]
+
+    def set_config_setting(self, name: str, value: float) -> None:
+        """Apply a row live; an open editor picks it up on its next frame."""
+        if name == 'editor_fx':
+            self._editor_fx = float(value) >= 0.5
+        elif name == 'editor_drip':
+            self._editor_drip = float(value) >= 0.5
+        elif name == 'editor_sparkle':
+            self._editor_sparkle = float(value) >= 0.5
+        elif name == 'editor_sparkle_density':
+            self._editor_sparkle_density = max(0.0, min(2.0, float(value)))
+        else:
+            return
+        editor = self._editor
+        if editor is not None:
+            editor.apply_fx_settings(
+                fx_enabled=self._editor_fx, drip_enabled=self._editor_drip,
+                sparkle_enabled=self._editor_sparkle,
+                sparkle_density=self._editor_sparkle_density,
+            )
 
     def __init__(self, cfg: dict) -> None:
         self._enabled   = bool(cfg.get('enabled', True))

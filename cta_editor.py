@@ -448,6 +448,16 @@ class CTAEditor:
         if self._drip_enabled or self._sparkle_enabled:
             self._dirty = True
 
+    def apply_fx_settings(self, *, fx_enabled: bool, drip_enabled: bool,
+                          sparkle_enabled: bool, sparkle_density: float) -> None:
+        """Re-point the visual FX switches on an open editor (config editor rows)."""
+        self._fx_enabled = bool(fx_enabled)
+        self._drip_enabled = self._fx_enabled and bool(drip_enabled)
+        self._sparkle_enabled = self._fx_enabled and bool(sparkle_enabled)
+        self._sparkle_density = max(0.0, float(sparkle_density))
+        self._sparkle_anchors = None   # re-scatter at the new density
+        self._dirty = True
+
     def _init_sparkles(self) -> None:
         """Lazily scatter sparkle anchors along the panel border in
         panel-local fractional (u, v) coordinates, so they track panel

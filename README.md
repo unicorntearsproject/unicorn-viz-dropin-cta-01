@@ -1,7 +1,7 @@
 # cta-01 — CTA Hype Overlay
 
 Owner: Drop-in Maintainers
-Version: 0.9.0
+Version: 0.10.0
 Status: active
 Last updated: 2026-09-03
 
@@ -53,6 +53,7 @@ Private repository: `https://github.com/iDoMeteor/unicorn-viz-dropin-cta-01`
 
 ## Changelog
 
+- **0.10.0** — Editor FX master, drip, sparkles and sparkle density join the core config editor's Performance tab (live, also applied to an open editor; remembered across runs by core).
 - **0.9.0** — **Control Room panel, P2 of
   `docs/planning/control-room-panel-registry-plan-2026-09-04.md`, and a real
   bug fix.** Registers a declarative `CTA` panel via
